@@ -71,7 +71,9 @@ def merge_close_points(points, dist_threshold):
 
 # 1. CORE TRACKING
 video = tiff.imread(INPUT_PATH)  # Shape is (T, C, H, W)
-frames = video[:, CHANNEL_INDEX, :, :]
+#frames = video[:, CHANNEL_INDEX, :, :]
+#Experimenting with adding both channels --> Works really well
+frames = video[:, 0, :, :].astype(np.float32) + video[:, 1, :, :].astype(np.float32)
 
 allframesdetections = tp.batch(
     frames[:FRAME_LIMIT], 
@@ -88,17 +90,12 @@ allframestracks = tp.link(
 )
 
 # Clean index immediately after linking to prevent ambiguity
-allframestracks = allframestracks.reset_index(drop=True)
-
+#allframestracks = allframestracks.reset_index(drop=True)
 
 # 2. OUTPUT 1: DETECTIONS
-# Get start positions of ALL particles
-coords_all = (
-    allframestracks.loc[allframestracks.groupby('particle')['frame'].idxmin(), ['y', 'x']]
-    .to_numpy()
-)
+allframestracks = allframestracks.reset_index(drop=True)
+coords_all = allframestracks.sort_values('frame').drop_duplicates('particle', keep='first')[['y', 'x']].to_numpy()
 
-# Merge close points
 final_detections = merge_close_points(coords_all, MERGE_DIST_DETECTION)
 
 
@@ -107,25 +104,41 @@ final_detections = merge_close_points(coords_all, MERGE_DIST_DETECTION)
 long_tracks = tp.filter_stubs(allframestracks, TRACKLENGTH_THRESHOLD)
 
 if len(long_tracks) > 0:
+    # 1. Clean Index
     long_tracks = long_tracks.reset_index(drop=True)
+    # 2. Calculate MSD
+    # mpp=1.0, fps=1.0 keeps units in pixels and frames
+    imsd = tp.imsd(long_tracks, mpp=1.0, fps=1.0, max_lagtime=20)
     
-    # B. Calculate Displacement
-    df_sorted = long_tracks.sort_values(["particle", "frame"])
-    start = df_sorted.groupby("particle")[["y", "x"]].first()
-    end   = df_sorted.groupby("particle")[["y", "x"]].last()
+    # 3. Extract Metric: imsd at lagtime 5
+    if 5 in imsd.index:
+        metric_per_particle = imsd.loc[5]
+    else:
+        # Fallback to the largest available lag time if 5 isn't reached
+        metric_per_particle = imsd.iloc[-1]
+    
+    avg_displacement = np.sqrt(metric_per_particle)
+    
+    # 4. Apply Stationarity Filter
+    # Get IDs of particles that moved LESS than threshold
+    stationary_ids = avg_displacement[avg_displacement < DISPLACEMENT_THRESHOLD].index
+    
+    # 5. Extract Start Coordinates
+    # Filter long_tracks to only stationary particles, then grab first row
+    t_stationary = long_tracks[long_tracks['particle'].isin(stationary_ids)]
 
-    disp_df = end - start
-    disp_df["r"] = np.sqrt(disp_df["x"]**2 + disp_df["y"]**2)
+    raw_selection_coords = (
+        t_stationary
+        .sort_values('frame')
+        .drop_duplicates('particle', keep='first')[['y', 'x']]
+        .to_numpy()
+    )
 
-    # C. Apply Stationarity Filter
-    is_stationary_mask = np.asarray(disp_df["r"] < DISPLACEMENT_THRESHOLD)
-    raw_selection_coords = start.to_numpy()[is_stationary_mask]
-
-    # D. Merge close points
+    # 6. Merge close points
     final_selections = merge_close_points(raw_selection_coords, dist_threshold=MERGE_DIST_SELECTION)
+
 else:
     final_selections = np.array([])
-
 
 
 #==========
