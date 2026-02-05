@@ -1,0 +1,51 @@
+name: deepfret_realdeal
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.6.15
+  - pip
+  
+  - pip:
+    - numpy==1.16.3
+    - scipy==1.4.1
+    - pandas==0.24.2
+    - matplotlib==3.2.1
+    - scikit-image==0.15.0
+    - scikit-learn==0.21.2
+    - h5py==2.10.0
+    - pillow==7.0.0
+    
+    # --- Deep Learning ---
+    - tensorflow==2.0.1
+    - tensorflow-estimator==2.0.1
+    - keras-applications==1.0.8
+    - keras-preprocessing==1.1.2
+    - tensorboard==2.0.2
+    - gast==0.2.2
+    - google-auth==1.19.2
+    - google-pasta==0.2.0
+    - grpcio==1.30.0
+    - opt-einsum==3.2.1
+    - protobuf==3.12.2
+    - termcolor==1.1.0
+    - wrapt==1.12.1
+    - absl-py==0.9.0
+
+    #GUI  (Required by DeepFRET source code libs)
+    - pyqt5==5.14.2
+    - pyqt5-sip==12.8.0
+    - pywavelets==1.1.1
+    - networkx==2.4
+    - imageio==2.9.0
+    - tifffile==2020.9.3
+    - tqdm==4.32.1
+    - pyyaml==5.3.1
+    
+  
+    - parmap==1.5.2          # Required by lib.math
+    - hmmlearn==0.2.3        # Required by lib.math
+    - pomegranate==0.12.2    # Required by lib.math
+    - retrying==1.3.3        # Required by lib.math
+    - astropy==4.0.1         # Required by lib.container
+    - joblib==0.16.0         # Required by pomegranate
