@@ -1,0 +1,19 @@
+# --- Pipeline Execution Settings ---
+cores: 4
+use-conda: true
+printshellcmds: true
+rerun-incomplete: true
+
+#For selecting specifically wihch part of the snakemake algorithm to run.
+forcerun:
+#  - generate_data
+#  - run_algorithm
+#  - matching_benchmarking
+#  - plotting
+
+#how many resources to allocate
+resources:
+  - serial_lock=1
+
+#Test to only see the DAG
+#dry-run: true
