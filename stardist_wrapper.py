@@ -7,11 +7,12 @@ from tifffile import imread
 from csbdeep.utils import normalize
 from stardist.models import StarDist2D
 from skimage.measure import regionprops
+from skimage.morphology import white_tophat, disk
 from scipy.spatial import cKDTree
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import connected_components
 
-# Suppress TensorFlow logs for cleaner pipeline output
+# Suppress TensorFlow logs
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2' 
 
 #==========
@@ -20,7 +21,6 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 INPUT_PATH = sys.argv[1]
 OUTPUT_DET_PATH = sys.argv[2]
 OUTPUT_SEL_PATH = sys.argv[3]
-
 config_path = sys.argv[4]
 
 with open(config_path, 'r') as f:
@@ -33,40 +33,23 @@ p_filt = p["filter"]
 CHANNEL_INDEX = p["channel_index"]
 NORM_PERCENTILE_MIN = p["norm_percentile_min"]
 NORM_PERCENTILE_MAX = p["norm_percentile_max"]
-AXIS_NORM = tuple(p["axis_norm"]) # Convert list from yaml to tuple
+AXIS_NORM = tuple(p["axis_norm"])
+
 # StarDist Model Parameters
 STARDIST_MODEL_NAME = p["model_name"]
 PROB_THRESHOLD = p["prob_threshold"]
 NMS_THRESHOLD = p["nms_threshold"]
 MERGING_DIST = p["merging_dist"]
+
 # Filter Parameters
+TOPHAT_RADIUS = p_filt["tophat_radius"]
 MIN_AREA = p_filt["min_area"]
 MAX_AREA = p_filt["max_area"]
 MAX_MEAN_INTENSITY = p_filt["max_mean_intensity"]
+MIN_MEAN_INTENSITY = p_filt["min_mean_intensity"]
 MAX_ECCENTRICITY = p_filt["max_eccentricity"]
 MIN_SOLIDITY = p_filt["min_solidity"]
 
-
-#==========
-#HELPER FUNCTIONS
-#==========
-
-def merge_close_points(points, dist_threshold):
-    """Merges points within dist_threshold of each other."""
-    if len(points) == 0: return points
-    tree = cKDTree(points)
-    pairs = tree.query_pairs(r=dist_threshold)
-    if not pairs: return points
-    
-    pairs_list = list(pairs)
-    row_ind, col_ind = zip(*pairs_list)
-    N = len(points)
-    graph = csr_matrix((np.ones(len(pairs_list)), (row_ind, col_ind)), shape=(N, N))
-    n_components, labels = connected_components(graph, directed=False)
-    
-    df_temp = pd.DataFrame(points, columns=['y', 'x'])
-    df_temp['group_id'] = labels
-    return df_temp.groupby('group_id')[['y', 'x']].mean().to_numpy()
 
 
 #==========
@@ -74,15 +57,19 @@ def merge_close_points(points, dist_threshold):
 #==========
 
 # 1. CORE PROCESSING & PREDICTION
-# Load Video and Create Mean Projection
 tiffvideo = imread(INPUT_PATH)
-tiffvideo = tiffvideo[:, CHANNEL_INDEX, :, :]
+
+# Channel summing
+tiffvideo = tiffvideo[:,0,:,:] + tiffvideo[:,1,:,:]
 mean_video = np.mean(tiffvideo, axis=0)
+
+# Background correction
+mean_video = white_tophat(mean_video, footprint=disk(TOPHAT_RADIUS))
 
 # Normalize
 img = normalize(mean_video, NORM_PERCENTILE_MIN, NORM_PERCENTILE_MAX, axis=AXIS_NORM)
 
-# Load Model (Downloads if not present, otherwise loads from cache)
+# Load Model
 model = StarDist2D.from_pretrained(STARDIST_MODEL_NAME)
 
 # Predict
@@ -93,39 +80,34 @@ labels, details = model.predict_instances(
     nms_thresh=NMS_THRESHOLD
 )
 
+# 2. OUTPUT 1: RAW DETECTIONS (Using Weighted Centroids)
+# Calculate regionprops first to get sub-pixel weighted centroids
+regions = regionprops(labels, intensity_image=img)
 
-# 2. OUTPUT 1: RAW DETECTIONS
-# Get center points directly from StarDist metadata
-raw_points = np.array(details['points'])
-final_detections = merge_close_points(raw_points, MERGING_DIST)
+# Extract weighted centroids (y, x)
+if len(regions) > 0:
+    raw_points = np.array([props.weighted_centroid for props in regions])
+else:
+    raw_points = np.empty((0, 2))
 
+final_detections = raw_points
 
 # 3. OUTPUT 2: SELECTIONS (FILTERING)
-# Calculate properties for filtering (requires intensity image)
-regions = regionprops(labels, intensity_image=img)
 valid_indices = []
 
 for i, props in enumerate(regions):
-    # Condition 1: Size
     cond_size = MIN_AREA <= props.area <= MAX_AREA
-    
-    # Condition 2: Intensity (Lower than threshold)
-    cond_intensity = props.mean_intensity < MAX_MEAN_INTENSITY
-    
-    # Condition 3: Eccentricity (Lower than threshold -> means more circular)
+    cond_intensity1 = props.mean_intensity < MAX_MEAN_INTENSITY
+    cond_intensity2 = props.mean_intensity > MIN_MEAN_INTENSITY
     cond_eccentricity = props.eccentricity < MAX_ECCENTRICITY
-    
-    # Condition 4: Solidity (Higher than threshold -> means more convex/solid)
     cond_solidity = props.solidity > MIN_SOLIDITY
 
-    # Combine all checks
-    if cond_size and cond_intensity and cond_eccentricity and cond_solidity:
+    if cond_size and cond_intensity1 and cond_intensity2 and cond_eccentricity and cond_solidity:
         valid_indices.append(i)
 
-# Apply filter
-if len(valid_indices) > 0 and len(raw_points) > 0:
+if len(valid_indices) > 0:
     filtered_points = raw_points[valid_indices]
-    final_selections = merge_close_points(filtered_points, MERGING_DIST)
+    final_selections = filtered_points
 else:
     final_selections = np.empty((0, 2))
 
