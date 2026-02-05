@@ -88,3 +88,4 @@ trace_extraction:
   neighbourhood_size: 11
   subtract_background: false
   correct_illumination: false
+
