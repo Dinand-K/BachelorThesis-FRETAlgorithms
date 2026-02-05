@@ -10,20 +10,19 @@ output_class_stats  = snakemake.output.stats_class
 output_global_stats = snakemake.output.stats_global
 
 #2. Helper functions (mean lready exists in pandas)
-def p05(x): 
+def p025(x): 
     """Calculates the 5th percentile (lower error bound)."""
-    return x.quantile(0.05)
+    return x.quantile(0.025)
 
-def p95(x): 
+def p975(x): 
     """Calculates the 95th percentile (upper error bound)."""
-    return x.quantile(0.95)
+    return x.quantile(0.975)
 
-# The stats we want to calculate.
-# This results in MultiIndex columns (e.g., Recall -> [mean, p05, p95])
-stats_funcs = ['mean', p05, p95] #Functions defined for use inside "agg", efficient use of built-in functions. mean is built-in, p05 and p95 are custom.
+# This results in MultiIndex columns (e.g., Recall -> [mean, p025, p975])
+stats_funcs = ['mean', p025, p975] #mean is built-in, p025 and p975 are custom.
 
 
-#3 Process class benchmarks
+#3 class benchmarks
 df_class_all = pd.concat(
     (pd.read_csv(f) for f in input_class_files), 
     ignore_index=True
@@ -31,7 +30,7 @@ df_class_all = pd.concat(
 numeric_cols = df_class_all.select_dtypes(include=[np.number]).columns
 df_class_agg = df_class_all.groupby('Class')[numeric_cols].agg(stats_funcs)
 
-#4 Process global benchmarks
+#4 global benchmarks
 df_global_all = pd.concat(
     (pd.read_csv(f, index_col=0) for f in input_global_files)
 )
