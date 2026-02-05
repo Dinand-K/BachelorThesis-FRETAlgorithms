@@ -1,18 +1,26 @@
 # --- CONFIGURATION PARSING ---
-configpath = "config/realdata.yaml"
+configpath = "config/snr709.yaml"
 configfile: configpath
 
 REPEATS = config.get("repeats", 4)
 MATCHING_THRESHOLD = config.get("matching_threshold", 2)
+
 ALGORITHMS = [
     alg_name for alg_name, settings in config["algorithms"].items() 
     if settings.get("activate", False)
 ]
 
+SIM_TYPES = [
+    k for k, v in config["simulation"].items()
+    if isinstance(v, dict) and v.get("activate", False) and k != "global_settings"
+]
+
+REALDATA = config.get("use_real_data")
+
 # --- RULES ---
 rule all:
     input:
-        "results/the_master_panel.png"
+        "results/detection_selection_bars.png"
 
 rule generate_data:
     output:
@@ -21,7 +29,7 @@ rule generate_data:
         classes = "data_simulation/particle_classes/rep{rep}.npy"
     params:
         sim_settings = config["simulation"],
-        use_real_data = config.get("use_real_data", False)  #switches between data sim and simply reading provided files.
+        use_real_data = config.get("use_real_data", False)  #switches between data sim and simply reading provided files
     script:
         "scripts/data_analysis/data_simulation.py"
 
@@ -80,15 +88,21 @@ rule plotting:
         stats_class  = expand("results/{alg}/statistics_class.csv", alg=ALGORITHMS),
         stats_global = expand("results/{alg}/statistics_global.csv", alg=ALGORITHMS)
     output:
-        counts_plots        = expand("results/{alg}/detections_diagram.png", alg=ALGORITHMS),
-        retention_plots     = expand("results/{alg}/retention_diagram.png", alg=ALGORITHMS),
+        # CHANGED: Now outputs to a neutral 'plots' folder based on SIM_TYPES (classes)
+        # instead of algorithm folders.
+        counts_plots        = expand("results/plots/counts_{sim_type}.png", sim_type=SIM_TYPES),
+        retention_plots     = expand("results/plots/retention_{sim_type}.png", sim_type=SIM_TYPES),
+        
+        # Global plots remain the same
         pr_plot             = "results/recall_precision_plot.png",
-        total_visualization = "results/the_master_panel.png" 
+        total_visualization = "results/detection_selection_bars.png",
+        metrics_table       = "results/metrics_table.png"
     params:
         alg_ids = ALGORITHMS,
-        # Pull display names dynamically from config
         alg_names = [config["algorithms"][a]["display_name"] for a in ALGORITHMS],
-        # ADD THIS: Pass simulation config to identify the Target Class
-        sim_settings = config["simulation"]
+        sim_settings = config["simulation"],
+        REALDATA = REALDATA,
+        # CRITICAL: Pass the active simulation keys so the script knows what to plot
+        sim_types = SIM_TYPES 
     script:
         "scripts/data_analysis/plotting.py"
