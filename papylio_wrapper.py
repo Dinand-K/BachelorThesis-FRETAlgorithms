@@ -3,8 +3,6 @@ import xarray as xr
 import numpy as np
 from tifffile import imread, imwrite
 import matplotlib.pyplot as plt
-from scipy.spatial.distance import cdist
-from scipy.spatial import cKDTree
 import os
 import yaml
 import sys
@@ -13,7 +11,7 @@ from pathlib import Path
 
 
 #==========
-#HELPTER FUNCTIONS
+# HELPER FUNCTIONS
 #==========
 
 def find_particles_fromnc(nc_path):
@@ -42,9 +40,8 @@ def find_particles_from_memory(file_object, selection_name):
         return np.empty((0, 2))
 
 
-
 #==========
-#VARIABLES
+# VARIABLES
 #==========
 
 input_path = Path(sys.argv[1]).resolve()
@@ -59,6 +56,7 @@ with open(config_path, 'r') as f:
 p = full_config["algorithms"]["papylio"]["params"]
 
 intensity_total_maximum_threshold = p["intensity_total_max_threshold"]
+intensity_end_minimum_threshold = p["intensity_end_min_threshold"]
 fraction_difference = p["fraction_difference"]
 neighbourhood_size_min = p["neighbourhood_size_min"]
 neighbourhood_size_max = p["neighbourhood_size_max"]
@@ -69,7 +67,7 @@ rolling_window_size = p["rolling_window_size"]
 
 
 #==========
-#FOLDER CLEANING AND PATH SETUP
+# FOLDER CLEANING AND PATH SETUP
 #==========
 
 # --- Setup paths ---
@@ -81,25 +79,25 @@ papylio_dir = project_root / "algorithms" / "papylio"
 papylio_dir.mkdir(parents=True, exist_ok=True)
 path_DataSimCopy = papylio_dir / "DataSim_copy.tiff"
 
-# Define strings for Papylio/OS compatibility
+
 nc_path = str(path_DataSimCopy.with_suffix(".nc"))
 ave_path = str(papylio_dir / f"{path_DataSimCopy.stem}_ave_f0-500_i0.tif")
 path_DataSimCopy_str = str(path_DataSimCopy) 
 log_path = str(papylio_dir / "DataSim_copy.log")
 
 # Clean old files ---
-for p in [path_DataSimCopy_str, nc_path, ave_path, log_path]:
-    if os.path.exists(p):
-        os.remove(p)
+for p_file in [path_DataSimCopy_str, nc_path, ave_path, log_path]:
+    if os.path.exists(p_file):
+        os.remove(p_file)
 
 # waiting a bit
 print("Waiting for file cleanup in Papylio programme folder...")
-time.sleep(6)
+time.sleep(2)
 
 
 
 #==========
-#PAPYLIO DETECTION
+# PAPYLIO DETECTION
 #==========
 
 # Copy input Tiff to Papylio folder
@@ -119,11 +117,12 @@ if not exp.files:
 
 file = exp.files[0] 
 
-# Apply channel settings
+# Apply channel settings 
 file.movie.channel_arrangement = [[[0]]]
 file.movie.channels = file.movie.channels[0:1]
 
 # Find Coordinates
+print("Finding coordinates...")
 file.find_coordinates(
     channels=["donor"],
     method="by_channel",
@@ -135,13 +134,11 @@ file.find_coordinates(
     peak_finding=dict(
         method="local-maximum-auto",
         fraction_difference=fraction_difference, 
-#        method = "local-maximum",
-#        minimum_intensity_difference = 0.15,
         filter_neighbourhood_size_min = neighbourhood_size_min,
         filter_neighbourhood_size_max = neighbourhood_size_max
     ),
     coordinate_optimization=dict(
-        coordinates_within_margin=dict(margin=edge_margin),
+        coordinates_within_margin=dict(margin=10), 
         coordinates_after_gaussian_fit=dict(gaussian_width=gaussian_fit_width)
     )
 )
@@ -149,28 +146,46 @@ file.find_coordinates(
 # Get detections
 detected_points = find_particles_fromnc(nc_path)
 
+if len(detected_points) == 0:
+    print("WARNING: 0 molecules found. Saving empty results.")
+    np.save(output_det_path, np.empty((0, 2)))
+    np.save(output_sel_path, np.empty((0, 2)))
+    sys.exit(0)
 
 
 #==========
-#PAPYLIO SELECTION
+# PAPYLIO SELECTION
 #==========
 
+print("Extracting traces...")
 file.extract_traces()
+
+# 1. Total Intensity Selection
 intensity_total_rolling = file.intensity_total.rolling(frame=rolling_window_size, center=True).mean().dropna('frame')
 selection = (intensity_total_rolling < intensity_total_maximum_threshold).all('frame')
 file.set_variable(selection, name='selection_intensity_total')
-file.apply_selections('selection_intensity_total')
+
+# 2. "Acceptor" Selection (Using Channel 0 as per your logic)
+intensity_acceptor_end = file.intensity.sel(channel=0, frame=slice(-5, None)).mean('frame')
+selection_acceptor = intensity_end_minimum_threshold < intensity_acceptor_end
+file.set_variable(selection_acceptor, name='selection_intensity_end')
+
+combined_selection = selection & selection_acceptor
+
+# Save this combined mask to the file memory
+file.set_variable(combined_selection, name='selection_combined')
+
+#file.apply_selections()
 
 # Get Selected Points
-selected_points = find_particles_from_memory(file, 'selection_intensity_total')
+selected_points = find_particles_from_memory(file, 'selection_combined')
 
 print(f"Papylio Detected: {len(detected_points)}")
 print(f"Papylio Selected: {len(selected_points)}")
 
 
-
 #==========
-#SAVING RESULTS
+# SAVING RESULTS
 #==========
 
 print(f"Papylio directory before reset: {os.getcwd()}")
@@ -178,8 +193,6 @@ os.chdir(project_root)
 print(f"Papylio directory reset to: {os.getcwd()}, the project root.")
 
 # Ensure output directories exist
-# We use .resolve() paths here, so these will work regardless of os.chdir,
-# but resetting the directory makes the logic cleaner.
 output_det_path.parent.mkdir(parents=True, exist_ok=True)
 output_sel_path.parent.mkdir(parents=True, exist_ok=True)
 
