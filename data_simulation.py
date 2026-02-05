@@ -3,6 +3,8 @@ import numpy as np
 import cv2
 import tifffile as tiff
 import matplotlib.pyplot as plt
+import os
+import sys
 
 # --- Snakemake IO ---
 path_tiff    = snakemake.output.tiff
@@ -14,257 +16,233 @@ rep = snakemake.wildcards.rep
 
 if use_real_data_boolean:
     print("Data simulation script called to use real data")
-
-    import os
-    import sys
-
-    # Source paths real data
+    
     src_tiff = "realdata/vid.tiff"
     src_coords = "realdata/coord.npy"
     src_classes = "realdata/class.npy"
 
-    # Safety check
-    if not os.path.exists(src_tiff):
-        sys.exit(f"Error: Real data mode is active, but real data source file '{src_tiff}' was not found.")
-
-    # 1. TIFF Processing
-    # Load raw video. Assuming shape (T, H, W)
-    video_raw = tiff.imread(src_tiff)
+    video = tiff.imread(src_tiff)
+    video = video[:, [1, 0], :, :]
     
-    # Logic to simulate dual-view: Roll the image by half height to create 2nd channel
-    # Assuming standard Tiff dims: (Time, Y, X) -> axis 1 is Y (Height)
-    if video_raw.ndim >= 2:
-        height_axis = 1 if video_raw.ndim == 3 else 0
-        height = video_raw.shape[height_axis]
-        
-        # Create 'Swapped' channel
-        video_swapped = np.roll(video_raw, height // 2, axis=height_axis)
-        
-        # Stack to create (Time, Channel, Y, X)
-        final_video = np.stack([video_raw, video_swapped], axis=1)
-    else:
-        # Fallback for unexpected shapes
-        final_video = video_raw
+    #videozero = np.zeros_like(video)    
+    #final_video = np.stack([video_, video_empty], axis=1)
+    
+    #EXPERIMENTAL
+    #tiff.imwrite(path_tiff, video)
+    #instead:
+    tiff.imwrite(
+    path_tiff, 
+    video.astype(np.float32), 
+    imagej=True, 
+    metadata={'axes': 'TCYX'}
+    )
 
-    # Save formatted TIFF
-    tiff.imwrite(path_tiff, final_video)
-
-    # 2. Coordinates (Load source -> Save to destination)
-    if os.path.exists(src_coords):
-        np.save(path_coords, np.load(src_coords))
-    else:
-        print(f"Warning: real data path {src_coords} not found. Saving empty coordinates.")
-        np.save(path_coords, np.empty((0, 2)))
-
-    # 3. Classes (Load source -> Save to destination)
-    if os.path.exists(src_classes):
-        np.save(path_classes, np.load(src_classes))
-    else:
-        print(f"Warning: real data path {src_classes} not found. Saving empty classes.")
-        np.save(path_classes, np.empty((0,)))
+    np.save(path_coords, np.load(src_coords))
+    np.save(path_classes, np.load(src_classes))
 
     print(f"Real data processed and saved to {path_tiff}!")
-    
-    # CRITICAL: Exit script here to prevent the Simulation logic below from running
+
     sys.exit(0)
-
-
-
 
 print(f"Starting data simulation #{rep}...")
 
-#Functions for data simulation
-def generate_stationary_positions(num_stationary, n_frames, img_size, margin, min_distance):
-    start_positions_list = []
-    max_total_attempts = num_stationary * 1000
-    attempts = 0
-    while len(start_positions_list) < num_stationary:
-        if attempts > max_total_attempts:
-            raise RuntimeError(f"Failed to place all particles.")
-        candidate_pos = np.random.randint(margin, img_size - margin, size=2)
-        attempts += 1
-        is_valid = True
-        for pos in start_positions_list:
-            dist = np.linalg.norm(candidate_pos - pos)
-            if dist < min_distance:
-                is_valid = False
-                break
-        if is_valid:
-            start_positions_list.append(candidate_pos)
-    start_positions = np.array(start_positions_list)
-    positions = np.repeat(start_positions[None, :, :], n_frames, axis=0)
-    return positions, start_positions
+# ==========================================
+#           SIMULATION FUNCTIONS
+# ==========================================
 
-def generate_aggregate_positions(num_aggregate, n_frames, img_size, margin):
-    start_positions = np.random.randint(margin, img_size - margin, size=(num_aggregate, 2))
-    positions = np.repeat(start_positions[None, :, :], n_frames, axis=0)
-    return positions, start_positions
+def generate_valid_simulation_tracks(n_stat, n_rw, n_agg, 
+                                     n_frames, img_size, margin, min_distance,
+                                     rw_step_size, rw_min_life, rw_max_life):
+    """
+    Generates tracks for ALL particles simultaneously.
+    Prevents overlap by checking the 'Ground Truth' location (Mean for RW) 
+    against existing neighbors before accepting a particle.
+    """
+    total_particles = n_stat + n_rw + n_agg
+    if total_particles == 0:
+        return np.empty((n_frames,0,2)), np.empty((n_frames,0,2)), np.array([]), np.array([]), np.empty((n_frames,0,2))
 
-def generate_randomwalk_positions(num_random, n_frames, img_size, step_size, margin, min_life=2, max_life=None):
-    if max_life is None: raise ValueError("max_life must be provided.")
-    positions = np.full((n_frames, num_random, 2), np.nan, dtype=float)
-    t_starts = np.random.randint(0, n_frames, size=num_random)
-    lifetimes = np.random.randint(min_life, min(max_life, n_frames) + 1, size=num_random)
-    t_ends = np.minimum(t_starts + lifetimes - 1, n_frames - 1)
-    start_positions = np.full((num_random, 2), np.nan, dtype=float)
-    for i in range(num_random):
-        s, e = int(t_starts[i]), int(t_ends[i])
-        L = e - s + 1
-        start_pos = np.random.randint(margin, img_size - margin, size=2).astype(float)
-        start_positions[i] = start_pos
-        positions[s, i] = start_pos
-        if L > 1:
-            steps = np.random.uniform(-step_size, step_size, size=(L - 1, 2))
-            traj = np.cumsum(steps, axis=0) + start_pos
-            traj = np.clip(traj, 0, img_size - 1)
-            positions[s + 1: s + 1 + (L - 1), i] = traj
-    return positions, t_starts, t_ends, start_positions
+    valid_tracks = []
+    valid_gt_positions = [] 
+    types = [] # 0=Stat, 1=RW, 2=Agg
 
+    type_queue = ([0]*n_stat) + ([1]*n_rw) + ([2]*n_agg)
+    np.random.shuffle(type_queue)
 
+    low = float(margin)
+    high = float(img_size - margin)
+    max_consecutive_fails = int(img_size * 10)
+    consecutive_fails = 0
+
+    for p_type in type_queue:
+        placed = False
+        while not placed:
+            if consecutive_fails > max_consecutive_fails:
+                raise RuntimeError("Could not place all particles, lower amount of particles.")
+
+            # 1. Candidate Start
+            start = np.random.uniform(low, high, size=2)
+            
+            # 2. Generate Track & GT Point
+            track = np.full((n_frames, 2), np.nan)
+            gt_point = start.copy() # Default for Stat/Agg
+
+            if p_type == 0 or p_type == 2: # Stationary / Aggregate
+                track[:] = start
+            
+            elif p_type == 1: # Random Walk
+                t_start = np.random.randint(0, n_frames)
+                life = np.random.randint(rw_min_life, min(rw_max_life, n_frames) + 1)
+                t_end = min(t_start + life - 1, n_frames - 1)
+                L = t_end - t_start + 1
+                
+                track[t_start] = start
+                if L > 1:
+                    steps = np.random.uniform(-rw_step_size, rw_step_size, size=(L - 1, 2))
+                    traj = np.cumsum(steps, axis=0) + start
+                    traj = np.clip(traj, 0, img_size - 1)
+                    track[t_start+1 : t_start+L] = traj
+                
+                # Check mean position for safety
+                valid_segment = track[t_start : t_start+L]
+                gt_point = np.mean(valid_segment, axis=0)
+
+            # 3. Distance Check
+            if len(valid_gt_positions) > 0:
+                existing_arr = np.array(valid_gt_positions)
+                dists = np.linalg.norm(existing_arr - gt_point, axis=1)
+                
+                if np.any(dists < min_distance):
+                    consecutive_fails += 1
+                    continue 
+
+            # 4. Success
+            valid_tracks.append(track)
+            valid_gt_positions.append(gt_point)
+            types.append(p_type)
+            consecutive_fails = 0
+            placed = True
+
+    # Reshape to (Time, Particles, 2)
+    all_tracks = np.array(valid_tracks) 
+    all_tracks = np.moveaxis(all_tracks, 0, 1) 
+    types = np.array(types)
+
+    # Slice back into groups
+    stat_tracks = all_tracks[:, types==0, :]
+    rw_tracks   = all_tracks[:, types==1, :]
+    agg_tracks  = all_tracks[:, types==2, :]
+
+    # Recover RW Start/Ends for intensity generation
+    rw_starts, rw_ends = [], []
+    for i in range(all_tracks.shape[1]):
+        if types[i] == 1:
+            valid_idx = np.where(~np.isnan(all_tracks[:, i, 0]))[0]
+            if len(valid_idx) > 0:
+                rw_starts.append(valid_idx[0])
+                rw_ends.append(valid_idx[-1])
+            else:
+                rw_starts.append(0); rw_ends.append(0)
+
+    return stat_tracks, rw_tracks, np.array(rw_starts), np.array(rw_ends), agg_tracks
 
 def generate_stationary_intensities_hmm(n_frames, num_particles, 
                                         pi=None, trans_matrix=None, 
                                         fret_means=(0.2, 0.8), fret_stds=(0.05, 0.05), 
-                                        min_total=1.0, max_total=3.0, 
+                                        min_total_brightness=1.0, max_total_brightness=3.0, 
                                         rng_seed=None):
-    
-    rng = np.random.default_rng(rng_seed)
-    
-    # 1. Setup HMM probabilities
-    pi = np.asarray(pi, dtype=float) / np.sum(pi)
+    if num_particles == 0: return np.empty((n_frames, 0, 2), dtype=float)
 
+    rng = np.random.default_rng(rng_seed)
+    pi = np.asarray(pi, dtype=float) / np.sum(pi)
     trans_matrix = np.asarray(trans_matrix, dtype=float)
-    
     fret_means = np.asarray(fret_means, dtype=float)
     fret_stds = np.asarray(fret_stds, dtype=float)
     
-    # 2. Assign Total Brightness (D + A) for each particle
-    # This bucket of energy stays roughly constant while FRET fluctuates
-    total_brightness_list = rng.uniform(min_total, max_total, size=num_particles)
-    
-    # Shape: (n_frames, num_particles, 2)
+    total_brightness_list = rng.uniform(min_total_brightness, max_total_brightness, size=num_particles)
     intensities = np.empty((n_frames, num_particles, 2), dtype=float)
     cum_trans = np.cumsum(trans_matrix, axis=1)
 
     for i in range(num_particles):
-        # --- A) Generate the State Sequence (Markov Chain) ---
-
-        #STarting states
+        # State generation
         r0 = rng.random()
         state0 = 0 if r0 < pi[0] else 1
         states = np.empty(n_frames, dtype=np.int8)
         states[0] = state0
-        
-        #States over time
         for t in range(1, n_frames):
             r = rng.random()
             prev = states[t-1]
-            # transition based on previous state
             states[t] = 0 if r < cum_trans[prev, 0] else 1
             
-        # --- B) Generate FRET Efficiency (E) with Noise ---
+        # FRET Efficiency with noise
         current_means = fret_means[states]
         current_stds = fret_stds[states]
+        efficiency_trace = np.clip(rng.normal(loc=current_means, scale=current_stds, size=n_frames), 0.0, 1.0)
         
-        # This is the "wobble" of the molecule
-        efficiency_trace = rng.normal(loc=current_means, scale=current_stds, size=n_frames)
-        
-        # Clip E to [0, 1] because transfer cannot be >100% or <0%
-        efficiency_trace = np.clip(efficiency_trace, 0.0, 1.0)
-        
-        # --- C) Split the Total Energy based on E ---
+        # Intensity Calculation
         total_b = total_brightness_list[i]
-        
-        # Donor = Total * (1 - E)
-        dd_trace = total_b * (1.0 - efficiency_trace)
-        
-        # Acceptor = Total * E
-        da_trace = total_b * efficiency_trace
-        
-        # Stack into the last dimension
-        intensities[:, i, 0] = dd_trace
-        intensities[:, i, 1] = da_trace
+        intensities[:, i, 0] = total_b * (1.0 - efficiency_trace) # Donor
+        intensities[:, i, 1] = total_b * efficiency_trace         # Acceptor
 
     return intensities
 
-
-def generate_moving_intensities(n_frames, num_particles, t_starts, t_ends, min_amp=0.5, max_amp=2.0, fade_len=5):
+def generate_moving_intensities(n_frames, num_particles, t_starts, t_ends, min_amp=0.5, max_amp=2.0, fade_len=1):
+    if num_particles == 0: return np.empty((n_frames, 0, 2), dtype=float)
+        
     intensities = np.full((n_frames, num_particles, 2), np.nan, dtype=float)
     amplitudes = np.random.uniform(min_amp, max_amp, num_particles)
     
     for i in range(num_particles):
         s, e = int(t_starts[i]), int(t_ends[i])
-        A = amplitudes[i]
         L = e - s + 1
         fade = min(fade_len, L // 2)
+        
+        #Fade in and fade out
         rise = np.linspace(0, 1, fade)
         flat = np.ones(max(0, L - 2 * fade))
         fall = np.linspace(1, 0, fade)
         curve = np.concatenate([rise, flat, fall])
-        trace = A * curve
         
-        trace_duplicated = np.stack([trace, trace], axis=1)
-        intensities[s : e + 1, i, :] = trace_duplicated
+        trace = amplitudes[i] * curve
+        intensities[s : e + 1, i, :] = np.stack([trace, trace], axis=1)
+        
     return intensities
 
-
-import numpy as np
-
-def generate_aggregate_intensities(n_frames, num_aggregates, 
-                                   fluor_range=(3, 10), 
-                                   A0=1.0, 
-                                   pi=(0.98, 0.02), 
-                                   state_means=(0.2, 0.8), # Renamed defaults to typical FRET Efficiencies 
-                                   state_stds=(0.05, 0.05), 
-                                   per_agg_amp_jitter=(0.9, 1.1), # not per fluorophore now but for the entire aggregate
-                                   rng_seed=None):
+def generate_aggregate_intensities(n_frames, num_aggregates, num_fluor_range, 
+                                   fluor_brightness_mean, fluor_brightness_var, fluor_pi,
+                                   fluor_E_means, fluor_E_stds, fluor_trans_matrix,
+                                   jitter_std, rng_seed=None):
     
     rng = np.random.default_rng(rng_seed)
+    num_fluor = rng.integers(num_fluor_range[0], num_fluor_range[1] + 1, size=num_aggregates)
     
-    # Randomly decide how many fluorophores are in each aggregate
-    N_per_agg = rng.integers(fluor_range[0], fluor_range[1] + 1, size=num_aggregates)
-    
-    # Hardcoded transition matrix
-    trans_matrix = np.array([[0.995, 0.005], [0.01,  0.99]], dtype=float)
-    # Ensuring it is normalized
-    trans_matrix /= trans_matrix.sum(axis=1, keepdims=True)
-    
-    # Output shape: (n_frames, num_aggregates, 2)
+    # Normalize transition matrix just in case
+    fluor_trans_matrix = np.array(fluor_trans_matrix, dtype=float)
+    fluor_trans_matrix /= fluor_trans_matrix.sum(axis=1, keepdims=True)
+
     agg_intensities = np.zeros((n_frames, num_aggregates, 2), dtype=float)
     
     for i in range(num_aggregates):
-        N = int(N_per_agg[i])
-        
-        # Accumulator for this single aggregate (Donor, Acceptor)
+        N = int(num_fluor[i])
         agg_trace_accum = np.zeros((n_frames, 2), dtype=float)
         
         for j in range(N):
-            per_fluo_seed = None if rng_seed is None else int(rng.integers(0, 2**31 - 1))
+            fluor_seed = None if rng_seed is None else int(rng.integers(0, 2**31 - 1))
+            fluor_brightness = max(0.1, rng.normal(loc=fluor_brightness_mean, scale=fluor_brightness_var * fluor_brightness_mean))
             
-            # Generate a single FRET pair trace
-            # We map A0 to the Total Brightness
-            # We map state_means to FRET Efficiencies
             single_trace = generate_stationary_intensities_hmm(
-                n_frames=n_frames, 
-                num_particles=1, 
-                pi=pi, 
-                trans_matrix=trans_matrix,
-                fret_means=state_means,     # Use these as Efficiency states (0.0 - 1.0)
-                fret_stds=state_stds, 
-                min_total=A0,               # Fixed brightness A0
-                max_total=A0, 
-                rng_seed=per_fluo_seed
+                n_frames=n_frames, num_particles=1, pi=fluor_pi, trans_matrix=fluor_trans_matrix,
+                fret_means=fluor_E_means, fret_stds=fluor_E_stds,
+                min_total_brightness=fluor_brightness, max_total_brightness=fluor_brightness,
+                rng_seed=fluor_seed
             )
-            
-            # single_trace shape is (n_frames, 1, 2). 
-            # Add it to the accumulator.
             agg_trace_accum += single_trace[:, 0, :]
     
-        # Apply the global jitter for this aggregate, instead of per-fluorophore. 
-        jitter = rng.uniform(per_agg_amp_jitter[0], per_agg_amp_jitter[1])
-        agg_intensities[:, i, :] = agg_trace_accum * jitter
+        # Apply global jitter
+        jitter = rng.normal(loc=1, scale=jitter_std, size=(n_frames,2))
+        agg_intensities[:, i, :] = np.clip(agg_trace_accum * jitter, 0.0, None)
         
-    return agg_intensities, N_per_agg
+    return agg_intensities
 
 def render_frames(stationary_positions, rw_positions, agg_positions, 
                   stationary_intensities, rw_intensities, agg_intensities, 
@@ -275,104 +253,98 @@ def render_frames(stationary_positions, rw_positions, agg_positions,
     
     rng = np.random.default_rng(rng_seed)
     frames = []
+
+    # Pre-calculate Gaussian kernel
+    radius = int(np.ceil(4 * gauss_sigma))
+    y_range = np.arange(-radius, radius + 1)
+    x_range = np.arange(-radius, radius + 1)
+    dy_grid, dx_grid = np.meshgrid(y_range, x_range, indexing='ij')
     
+    # Normalization Factor (Ensures Total Volume = 1.0)
+    gaussian_norm_factor = 1.0 / (2 * np.pi * gauss_sigma**2)
+
+    def add_particles(frame, positions, intensities):
+        valid_mask = ~np.isnan(positions).any(axis=1)
+        valid_pos = positions[valid_mask]
+        valid_int = intensities[valid_mask]
+
+        for (x, y), (i_donor, i_acceptor) in zip(valid_pos, valid_int):
+            cx, cy = int(np.round(x)), int(np.round(y))
+            shift_x, shift_y = cx - x, cy - y
+            
+            # Sub-pixel Weights
+            dist_sq = (dx_grid + shift_x)**2 + (dy_grid + shift_y)**2
+            weights = np.exp(-dist_sq / (2 * gauss_sigma**2))
+            weights *= gaussian_norm_factor
+            
+            # Bounds Checking
+            y_start, y_end = cy - radius, cy + radius + 1
+            x_start, x_end = cx - radius, cx + radius + 1
+            w_y_s, w_y_e = 0, weights.shape[0]
+            w_x_s, w_x_e = 0, weights.shape[1]
+            
+            if y_start < 0: w_y_s, y_start = -y_start, 0
+            if y_end > img_size: w_y_e, y_end = w_y_e - (y_end - img_size), img_size
+            if x_start < 0: w_x_s, x_start = -x_start, 0
+            if x_end > img_size: w_x_e, x_end = w_x_e - (x_end - img_size), img_size
+
+            if y_start >= y_end or x_start >= x_end: continue
+
+            patch = weights[w_y_s:w_y_e, w_x_s:w_x_e]
+            
+            # Add Light
+            frame[y_start:y_end, x_start:x_end, 0] += i_donor * patch
+            frame[y_start:y_end, x_start:x_end, 1] += i_acceptor * patch
+
     for t in range(n_frames):
-        # Initialize a 2-channel canvas (Green/Red)
-        # Shape: (Height, Width, Channels)
         frame = np.zeros((img_size, img_size, 2), dtype=np.float32)
         
-        # 1. Place Stationary Particles (FRET Pairs)
-        for i in range(num_stationary):
-            x, y = stationary_positions[t, i]
-            I = stationary_intensities[t, i] # Shape (2,) -> [Donor, Acceptor]
-            
-            x_i, y_i = int(x), int(y)
-            if 0 <= x_i < img_size and 0 <= y_i < img_size:
-                frame[y_i, x_i, :] += I
-                
-        # 2. Place Random Walk Particles (Trash)
-        for i in range(num_randomwalk):
-            # Skip if the particle has left the simulation (NaN)
-            if np.isnan(rw_positions[t, i]).any(): continue
-            
-            x, y = rw_positions[t, i]
-            I = rw_intensities[t, i]         # Shape (2,) -> [Trash, Trash]
-            
-            x_i, y_i = int(x), int(y)
-            if 0 <= x_i < img_size and 0 <= y_i < img_size:
-                frame[y_i, x_i, :] += I
-                
-        # 3. Place Aggregates (Clumps of FRET Pairs)
-        for i in range(num_aggregates):
-            x, y = agg_positions[t, i]
-            I = agg_intensities[t, i]        # Shape (2,)
-            
-            x_i, y_i = int(x), int(y)
-            if 0 <= x_i < img_size and 0 <= y_i < img_size:
-                frame[y_i, x_i, :] += I
-                
-        # --- Simulate Optics & Camera Noise ---
+        add_particles(frame, stationary_positions[t], stationary_intensities[t])
+        add_particles(frame, rw_positions[t], rw_intensities[t])
+        add_particles(frame, agg_positions[t], agg_intensities[t])
         
-        # 1. Diffraction Limit (PSF)
-        # cv2.GaussianBlur applies the blur independently to each channel
-        frame = cv2.GaussianBlur(frame, gauss_kernel, gauss_sigma)
-        
-        # 2. Add Background (Uniform fluorescence in solution)
-        # We assume background is roughly equal or just added to both
-        frame = frame + background_level
-        frame = np.clip(frame, 0.0, None)
-        
-        # 3. Photon Shot Noise (Poisson Statistics)
-        # Convert arbitrary units -> Mean Photon Count
-        mean_photons = frame * photon_scale
-        
-        # Sample actual photons detected (Independent for Ch1 and Ch2)
+        # Noise Simulation
+        frame += background_level
+        mean_photons = np.clip(frame * photon_scale, 0, None)
         photon_counts = rng.poisson(mean_photons).astype(np.float32)
-        
-        # 4. Camera Read Noise (Gaussian Electronic Noise)
-        # Independent noise for every pixel in every channel
         read_noise = rng.normal(0.0, read_noise_sigma, photon_counts.shape)
-        photon_counts += read_noise
         
-        # Clip to 0 (cannot have negative photons)
-        photon_counts = np.clip(photon_counts, 0, None)
+        frames.append(np.clip(photon_counts + read_noise, 0, None))
         
-        # Convert back to arbitrary units (optional, often kept as counts in raw data)
-        frame_final = photon_counts / float(photon_scale)
-        
-        frames.append(frame_final)
-        
-    return np.array(frames) # Returns shape (T, H, W, 2)
+    return np.array(frames)
 
 # ==========================================
-#       PARAMETER PARSING FROM CONFIG
+#           PARAMETER PARSING
 # ==========================================
 
-# 1. Global
+# Global
 global_cfg = sim_config["global_settings"]
 n_frames         = global_cfg["n_frames"]
 img_size         = global_cfg["img_size"]
 background_level = global_cfg["background_level"]
 read_noise       = global_cfg["read_noise"]
 
-# 2. Stationary
+# Stationary
 stat_cfg = sim_config["stationary"]
 num_stationary = stat_cfg["count"] if stat_cfg["activate"] else 0
-# Renamed variables
-stat_fret_means  = stat_cfg["params"]["fret_efficiency_means"]
-stat_fret_stds   = stat_cfg["params"]["fret_efficiency_stds"]
-stat_total_bright= stat_cfg["params"]["total_brightness"]
-stat_trans_mat   = np.array(stat_cfg["params"]["trans_matrix"])
+stat_fret_means   = stat_cfg["params"]["fret_efficiency_means"]
+stat_fret_stds    = stat_cfg["params"]["fret_efficiency_stds"]
+stat_total_bright = stat_cfg["params"]["total_brightness"]
+stat_trans_mat    = np.array(stat_cfg["params"]["trans_matrix"])
 
-# 3. Aggregate
+# Aggregate
 agg_cfg = sim_config["aggregate"]
 num_aggregate = agg_cfg["count"] if agg_cfg["activate"] else 0
-# Renamed variables
-agg_fret_means   = agg_cfg["params"]["fret_efficiency_means"]
-agg_fluor_rng    = agg_cfg["params"]["fluor_range"]
-agg_total_bright = agg_cfg["params"]["total_brightness"][0]
+num_fluor_range       = agg_cfg["params"]["num_fluor_range"]
+fluor_brightness_mean = agg_cfg["params"]["fluor_brightness_mean"]
+fluor_brightness_var  = agg_cfg["params"]["fluor_brightness_var"]
+fluor_pi              = agg_cfg["params"]["fluor_pi"]
+fluor_E_means         = agg_cfg["params"]["fluor_E_means"]
+fluor_E_stds          = agg_cfg["params"]["fluor_E_stds"]
+fluor_trans_matrix    = agg_cfg["params"]["fluor_trans_matrix"]
+jitter_std            = agg_cfg["params"]["jitter_std"]
 
-# 4. Moving
+# Moving
 mov_cfg = sim_config["moving"]
 num_randomwalk = mov_cfg["count"] if mov_cfg["activate"] else 0
 mov_amp_range  = mov_cfg["params"]["amplitude"]
@@ -380,124 +352,98 @@ mov_step       = mov_cfg["params"]["step_size"]
 mov_life_min   = mov_cfg["params"]["min_life"]
 mov_life_max   = mov_cfg["params"]["max_life"]
 
-# 5. Hardcoded settings
+# Settings
 margin = 3
 min_distance_stat = 7
 min_distance_agg  = 4
 gauss_kernel = (7,7)
 gauss_sigma = 1.5
-photon_scale = 80
-
+photon_scale = 500
 
 # ==========================================
 #           EXECUTION
 # ==========================================
 
-# Stationary Positions
-stationary_positions, stationary_start_positions = generate_stationary_positions(
-    num_stationary = num_stationary,
-    n_frames = n_frames,
-    img_size = img_size,
-    margin = margin,
-    min_distance = min_distance_stat
-)
+# 1. Generate Positions
 
-# Random Walk positions
-rw_positions, rw_starts, rw_ends, rw_start_positions = generate_randomwalk_positions(
-    num_random = num_randomwalk,
-    n_frames = n_frames,
-    img_size = img_size,
-    step_size = mov_step,
-    margin = margin,
-    min_life = mov_life_min,
-    max_life = mov_life_max,
-)
+max_min_distance = max(min_distance_stat, min_distance_agg)
 
-# Aggregate Positions
-agg_positions, aggregate_start_positions = generate_stationary_positions(
-    num_stationary = num_aggregate,
-    n_frames = n_frames,
-    img_size = img_size,
-    margin = margin,
-    min_distance = min_distance_agg
-)
-
-# Stationary Intensities 
-stationary_intensities = generate_stationary_intensities_hmm(
-    n_frames=n_frames, 
-    num_particles=num_stationary,
-    pi=[0.9, 0.1], 
-    trans_matrix=stat_trans_mat,
-    fret_means=tuple(stat_fret_means),
-    fret_stds=tuple(stat_fret_stds),
-    min_total=stat_total_bright[0],
-    max_total=stat_total_bright[1],
-    rng_seed=42
-)
-
-# Random walk intensities (Trash/Contaminants)
-rw_intensities = generate_moving_intensities(
-    n_frames,
-    num_particles=num_randomwalk,
-    t_starts=rw_starts,
-    t_ends=rw_ends,
-    min_amp=mov_amp_range[0],
-    max_amp=mov_amp_range[1],
-    fade_len=5,
-)
-
-# Aggregate intensities
-agg_intensities, N_per_agg = generate_aggregate_intensities(
+stationary_positions, rw_positions, rw_starts, rw_ends, agg_positions = generate_valid_simulation_tracks(
+    n_stat=num_stationary,
+    n_rw=num_randomwalk,
+    n_agg=num_aggregate,
     n_frames=n_frames,
-    num_aggregates=num_aggregate,
-    fluor_range=tuple(agg_fluor_rng),
-    A0=agg_total_bright,
-    pi=(0.98, 0.02),
-    state_means=tuple(agg_fret_means),
-    state_stds=(0.04, 0.04), # Hardcoded wobble for aggregates
-    per_agg_amp_jitter=(0.8, 1.5),
-    rng_seed=42
+    img_size=img_size,
+    margin=margin,
+    min_distance=max_min_distance,
+    rw_step_size=mov_step,
+    rw_min_life=mov_life_min,
+    rw_max_life=mov_life_max
 )
 
-# --- Render frames ---
+# 2. Generate Intensities
+stationary_intensities = generate_stationary_intensities_hmm(
+    n_frames=n_frames, num_particles=num_stationary, pi=[0.9, 0.1], trans_matrix=stat_trans_mat,
+    fret_means=tuple(stat_fret_means), fret_stds=tuple(stat_fret_stds),
+    min_total_brightness=stat_total_bright[0], max_total_brightness=stat_total_bright[1], rng_seed=42
+)
+
+rw_intensities = generate_moving_intensities(
+    n_frames, num_particles=num_randomwalk, t_starts=rw_starts, t_ends=rw_ends,
+    min_amp=mov_amp_range[0], max_amp=mov_amp_range[1], fade_len=0
+)
+
+agg_intensities = generate_aggregate_intensities(
+    n_frames, num_aggregate, num_fluor_range, fluor_brightness_mean, fluor_brightness_var,
+    fluor_pi, fluor_E_means, fluor_E_stds, fluor_trans_matrix, jitter_std, None
+)
+
+# 3. Render Frames
 frames = render_frames(
-    stationary_positions, 
-    rw_positions,
-    agg_positions,
-    stationary_intensities,
-    rw_intensities,
-    agg_intensities,
-    num_stationary,
-    num_randomwalk,
-    num_aggregate,
-    n_frames,
-    img_size,
-    gauss_kernel=gauss_kernel,
-    gauss_sigma=gauss_sigma,
-    photon_scale=photon_scale, 
-    read_noise_sigma=read_noise,
-    background_level=background_level,
-    rng_seed=None,
+    stationary_positions, rw_positions, agg_positions,
+    stationary_intensities, rw_intensities, agg_intensities,
+    num_stationary, num_randomwalk, num_aggregate,
+    n_frames, img_size, gauss_kernel, gauss_sigma,
+    photon_scale=photon_scale, read_noise_sigma=read_noise,
+    background_level=background_level, rng_seed=None
 )
 
-# Current shape from render function: (n_frames, img_size, img_size, 2) -> (T, H, W, C)
-# Move the Channel dimension to index 1, so new shape: (n_frames, 2, img_size, img_size) -> (T, C, H, W), which is the standard.
+# 4. Save Video
+# Move Channel dim to index 1: (T, H, W, C) -> (T, C, H, W)
 frames_to_save = np.moveaxis(frames, -1, 1)
-
-# Save video
 tiff.imwrite(
     path_tiff, 
-    frames_to_save.astype(np.float32),  #32-bit float
-    imagej=True,                        #Tells ImageJ to handle as hyperstack
-    metadata={'axes': 'TCYX'}           #Defines axes for ImageJ
+    frames_to_save.astype(np.float32), 
+    imagej=True, metadata={'axes': 'TCYX'}
 )
 
-# Prepare and save Ground Truth positions
-stationary_starts_yx = stationary_start_positions[:, [1, 0]].astype(int) 
-rw_starts_yx = rw_start_positions[:, [1, 0]].astype(int)
-agg_starts_yx = aggregate_start_positions[:, [1, 0]].astype(int)
+# 5. Save Ground Truth
+# Stationary: Frame 0 position
+if num_stationary > 0:
+    stationary_starts_yx = stationary_positions[0][:, [1, 0]]
+else:
+    stationary_starts_yx = np.empty((0, 2))
 
-# Stack must handle empty arrays if counts are 0
+
+# EXPERIMENTAL:
+# Random Walk: Mean position over valid track
+#if num_randomwalk > 0:
+#    rw_means_xy = np.nanmean(rw_positions, axis=0) 
+#    rw_starts_yx = rw_means_xy[:, [1, 0]]
+#else:
+#    rw_starts_yx = np.empty((0, 2))
+
+rw_start_coords_xy = rw_positions[rw_starts, np.arange(num_randomwalk), :]
+rw_starts_yx = rw_start_coords_xy[:, [1, 0]]
+#EXPERIMENTAL
+
+
+# Aggregate: Frame 0 position
+if num_aggregate > 0:
+    agg_starts_yx = agg_positions[0][:, [1, 0]]
+else:
+    agg_starts_yx = np.empty((0, 2))
+
 to_stack = []
 if num_stationary > 0: to_stack.append(stationary_starts_yx)
 if num_aggregate > 0: to_stack.append(agg_starts_yx)
@@ -508,13 +454,28 @@ if to_stack:
 else:
     full_start_positions = np.empty((0, 2))
 
-np.save(path_coords, full_start_positions)
+np.save(path_coords, full_start_positions.astype(np.float32))
 
-# Prepare and save Ground Truth classifications
-stationary_classes = np.array([0] * num_stationary)  # stationary = 0
-agg_classes = np.array([1] * num_aggregate)          # aggregate = 1
-rw_classes = np.array([2] * num_randomwalk)          # random-walk = 2
+# 6. Save Classes
+stationary_classes = np.array([0] * num_stationary)
+agg_classes = np.array([1] * num_aggregate)
+rw_classes = np.array([2] * num_randomwalk)
 full_classes = np.concatenate([stationary_classes, agg_classes, rw_classes]) 
 np.save(path_classes, full_classes)
 
 print(f"Data simulation #{rep} completed and saved.")
+
+
+#Printing SNR:
+avg_stat_brightness = np.mean(stat_total_bright)
+# 1. Get Signal
+# Convert total volume to peak height: Height = Volume / (2 * pi * sigma^2)
+peak_height_norm = 1.0 / (2 * np.pi * gauss_sigma**2)
+S_peak_photons = avg_stat_brightness * peak_height_norm * photon_scale
+# 2. Get Background (B)
+B_photons = background_level * photon_scale
+# 3. Calculate SNR 
+# Formula: S / sqrt(S + B + ReadNoise^2)
+# Note: (S + B) is the Photon Shot Noise Variance, as shot noise follows poisson statistics, where the mean = variance.
+snr = S_peak_photons / np.sqrt(S_peak_photons + B_photons + read_noise**2)
+print(f"SNR SIMULATION PROFILE: {snr:.2f}")
