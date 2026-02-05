@@ -1,0 +1,90 @@
+files:
+  excluded_extensions:
+  - pdf
+  - dat
+  - db
+  - py
+  - yml
+  - png
+  - pdf
+  - xlsx
+  - md
+  excluded_names:
+  - _ave
+  - _max
+  - _corrections
+  - _dwells
+  - _dwell_analysis
+  - darkfield
+  - flatfield
+  - _sequencing_data
+  - _sequencing_match
+  excluded_paths:
+  - Analysis
+  - Sequencing data
+  - Results
+movie:
+  rot90: 0
+show_movie:
+  annotate: false
+projection_image:
+  projection_type: average
+  frame_range:
+  - 0
+  - 20
+  illumination: 0
+find_coordinates:
+  channels:
+  - donor
+  illumination: 0
+  projection_type: average
+  method: by_channel
+  projection_image:
+    projection_type: average
+    frame_range:
+    - 0
+    - 20
+    illumination: 0
+  sliding_window:
+    use_sliding_window: false
+    frame_increment: 20
+    minimal_point_separation: 2
+  peak_finding:
+    method: local-maximum-auto
+    filter_neighbourhood_size_min: 10
+    filter_neighbourhood_size_max: 5
+  coordinate_optimization:
+    coordinates_within_margin:
+      margin: 10
+    coordinates_after_gaussian_fit:
+      gaussian_width: 3
+background:
+  method: ROI_minimum
+  frames_for_background:
+    first_frame: 0
+    last_frame: 9
+mapping:
+  method: icp
+  distance_threshold: 3
+  transformation_type: polynomial
+  initial_translation: width/2
+  peak_finding:
+    donor:
+      method: local-maximum-auto
+      filter_neighbourhood_size_min: 10
+      filter_neighbourhood_size_max: 5
+    acceptor:
+      method: local-maximum-auto
+      filter_neighbourhood_size_min: 10
+      filter_neighbourhood_size_max: 5
+  coordinate_optimization:
+    coordinates_after_gaussian_fit:
+      gaussian_width: 5
+    coordinates_within_margin:
+      margin: 10
+trace_extraction:
+  channel: all
+  mask_size: TIR-T
+  neighbourhood_size: 11
+  subtract_background: false
+  correct_illumination: false
