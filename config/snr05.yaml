@@ -1,0 +1,125 @@
+# --- Global Pipeline Settings ---
+repeats: 1
+matching_threshold: 1
+use_real_data: false  # True for Real Data, false for Simulation
+#if use_real_data, set repeats to ONE!! 
+
+# --- Simulation Configuration ---
+simulation:
+  # General Image Settings
+  global_settings:
+    n_frames: 500
+    img_size: 512
+    background_level: 15
+    read_noise: 560
+
+  stationary:
+    activate: true
+    type: "stationary"
+    display_name: "Singular Interaction"
+    count: 1000
+    params:
+      fret_efficiency_means: [0.2, 0.8]
+      fret_efficiency_stds: [0.04, 0.04]
+      total_brightness: [4.0, 12.0]
+      trans_matrix: [[0.95, 0.05], [0.05, 0.95]]
+
+  aggregate:
+    activate: true
+    type: "aggregate"
+    display_name: "Aggregate"
+    count: 500
+    params:
+      num_fluor_range: [3, 6]
+      fluor_brightness_mean: 4.0
+      fluor_brightness_var: 0.1
+      fluor_pi: [0.98, 0.02]
+      fluor_E_means: [0.2, 0.8]
+      fluor_E_stds: [0.15, 0.15]
+      fluor_trans_matrix: [[0.95, 0.05], [0.05, 0.95]]
+      jitter_std: 0.45
+
+  moving:
+    activate: true
+    type: "random_walk"
+    display_name: "Mobile Contaminants"
+    count: 500
+    params:
+      # INTENSITY MATCHING:
+      # Old Sim: [10.0, 20.0]. Matches exactly.
+      amplitude: [10.0, 20.0]
+      step_size: 4
+      min_life: 5
+      max_life: 50
+
+# --- Algorithm Configuration ---
+algorithms:
+  deepfret:
+    activate: true
+    display_name: "DeepFRET"
+    serial_lock_cost: 0
+    threads: 4
+    params:
+      model_path: "algorithms/DEEPFret/main/resources/base/FRET_2C_keras_model.h5"
+      spot_threshold: 2000 #was 0.4
+      confidence_threshold: 0.05 #0.01 all accepted
+      alpha: 0.01
+      delta: 0.01
+
+  papylio:
+    activate: true
+    display_name: "Papylio"
+    serial_lock_cost: 1
+    threads: 1
+    params:
+      intensity_total_max_threshold: 161000
+      intensity_end_min_threshold: 158000 
+      fraction_difference: 0.5
+      neighbourhood_size_min: 10
+      neighbourhood_size_max: 5
+      projection_max_frame: 500
+      edge_margin: 8
+      gaussian_fit_width: 3
+      rolling_window_size: 20
+
+  trackpy:
+    activate: true
+    display_name: "TrackPy"
+    serial_lock_cost: 0
+    threads: 1
+    params:
+      channel_index: 1
+      frame_limit: 500
+      detection_feature_size: 7 #uneven!
+      detection_minmass: 6000
+      invert_image: false
+      processes: 1
+      tracking_max_displacement: 4
+      tracking_memory: 5
+      tracklength_threshold: 20
+      displacement_threshold: 2
+      merge_dist_detection: 2.0
+      merge_dist_selection: 2.0
+
+  stardist:
+    activate: true
+    display_name: "StarDist"
+    serial_lock_cost: 0
+    threads: 4
+    params:
+      channel_index: 0
+      norm_percentile_min: 1.0
+      norm_percentile_max: 99.8
+      axis_norm: [0, 1]
+      model_name: '2D_versatile_fluo'
+      prob_threshold: 0.1
+      nms_threshold: 0.4
+      merging_dist: 3.0
+      filter:
+        tophat_radius: 14
+        min_area: 10
+        max_area: 40
+        min_mean_intensity: 0.1
+        max_mean_intensity: 0.31
+        max_eccentricity: 0.7
+        min_solidity: 0.7
