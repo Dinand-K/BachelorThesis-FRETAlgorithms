@@ -37,6 +37,12 @@ CONFIDENCE_THRESHOLD = p["confidence_threshold"]
 ALPHA = p["alpha"]
 DELTA = p["delta"]
 
+
+
+print(f"DEBUG: I am loading lib.imgdata from: {imgdata.__file__}")
+print(f"DEBUG: The spot_threshold passed is: {SPOT_THRESHOLD}")
+
+
 #==========
 #HELPER FUNCTIONS, INCLUDING DEEPFRET CORE LOGIC
 #==========
@@ -86,7 +92,7 @@ def extract_traces(vid, detected_points, video_name):
         try:
             masks = imgdata.circle_mask(yx=yx, indices=vid.indices, **gvars.cmask_p)
             
-            # Extract Raw Intensities (Using Green AND Red channels directly)
+            # Extract Raw Intensities
             trace.grn.int, trace.grn.bg = imgdata.tiff_stack_intensity(vid.grn.raw, *masks, raw=True)
             trace.acc.int, trace.acc.bg = imgdata.tiff_stack_intensity(vid.acc.raw, *masks, raw=True)
 
@@ -136,12 +142,11 @@ def predict_batch(traces_dict, model_path, alpha, delta):
         else:
             padding = np.zeros((100 - xi.shape[0], 2))
             xi_cropped = np.vstack([xi[:, [1, 2]], padding])
+        #DeepFRET expects shape (Time, 2)
+        #xi_cropped = xi[:, [1, 2]]
 
         # Normalize
-        try:
-            xi_cropped = libmath.sample_max_normalize_3d(X=xi_cropped)
-        except Exception:
-            xi_cropped = np.zeros((100, 2))
+        xi_cropped = libmath.sample_max_normalize_3d(X=xi_cropped)
 
         X_batch_list.append(xi_cropped)
         valid_indices.append(i)
@@ -169,8 +174,8 @@ def predict_batch(traces_dict, model_path, alpha, delta):
         trace.y_pred = yi
         
         # Fill required attributes with dummies so other DeepFRET functions don't crash
-        trace.first_bleach = 100 
-        for c in trace.channels: c.bleach = 100
+        trace.first_bleach = 500 
+        for c in trace.channels: c.bleach = 500
 
     return traces_dict
 
@@ -194,7 +199,7 @@ if len(traces) > 0:
     # Gather scores
     scores = np.array([t.confidence for t in traces])
     
-    # Filter Mask: Score >= CONFIDENCE_THRESHOLD
+    # Filter 
     valid_mask = scores >= CONFIDENCE_THRESHOLD
     
     #Offset correction
