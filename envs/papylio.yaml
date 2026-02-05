@@ -1,0 +1,16 @@
+name: papylio-env
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.9.15
+  - numpy
+  - scipy
+  - xarray
+  - tifffile
+  - matplotlib
+#  - netcdf4
+#  - h5netcdf
+  - pip
+  - pip:
+    - papylio

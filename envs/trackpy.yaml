@@ -1,0 +1,29 @@
+name: TrackPy
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  
+  # Scientific Stack
+  - numpy>=1.24
+  - pandas>=2.0
+  - scipy
+  - matplotlib
+  - scikit-learn
+  - scikit-image  # ADDED: Required for the baseline_wrapper (blob_log)
+  
+  # Tracking & Imaging
+  - trackpy>=0.6
+  - pims>=0.6
+  - tifffile
+  - imageio
+  - imagecodecs
+  - pillow
+  
+  # Java/Bioformats support (Useful if PIMS needs to read complex TIFFs)
+  - openjdk
+  - jpype1 
+
+  - libblas
+  - liblapack
